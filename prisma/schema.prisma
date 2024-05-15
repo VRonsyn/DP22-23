@@ -1,0 +1,320 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "binary"
+}
+
+model AnswerOption {
+  id                   String                  @id @default(uuid())
+  answer               String
+  // Reference number are totally ordered but not necessarily sequential
+  referenceNumber      Int
+  question             Question                @relation(fields: [questionId], references: [id])
+  questionId           String
+  submittedSurveyAnwer SubmittedSurveyAnswer[]
+  options              Json?
+  partialSettings      Json
+
+  @@unique([questionId, referenceNumber])
+}
+
+model SubmittedSurveyAnswer {
+  id                String          @id @default(uuid())
+  answerOption      AnswerOption    @relation(fields: [answerOptionId], references: [id])
+  answerOptionId    String
+  submittedSurvey   SubmittedSurvey @relation(fields: [submittedSurveyId], references: [id], onDelete: Cascade)
+  submittedSurveyId String
+  openAnswer        String?
+
+  @@unique([submittedSurveyId, answerOptionId])
+}
+
+model Question {
+  id              String         @id @default(uuid())
+  title           String         @db.VarChar(200)
+  // Reference number are totally ordered but not necessarily sequential
+  referenceNumber Int
+  description     String[]
+  answerOptions   AnswerOption[]
+  survey          Survey         @relation(fields: [surveyName], references: [name], onDelete: Cascade)
+  surveyName      String         @db.VarChar(200)
+
+  @@unique([surveyName, referenceNumber])
+}
+
+model Survey {
+  name            String            @id @db.VarChar(200)
+  creationTime    DateTime          @default(now())
+  questions       Question[]
+  surveyType      SurveyType
+  language        String
+  SubmittedSurvey SubmittedSurvey[]
+}
+
+model SubmittedSurvey {
+  id         String                  @id @default(uuid())
+  answers    SubmittedSurveyAnswer[]
+  child      Child                   @relation(fields: [childId], references: [id])
+  childId    String
+  day        DateTime                @default(now())
+  survey     Survey                  @relation(fields: [surveyName], references: [name])
+  surveyName String
+}
+
+// This is the moddel that was called object
+// A ClarificationImage can be used to beter display an activity
+model ClarificationImage {
+  id        String @id @default(uuid())
+  name      String
+  reference String
+
+  child   Child  @relation(fields: [childId], references: [id])
+  childId String
+
+  Template Template[]
+  Task     Task[]
+}
+
+// A template is an abstract model of an activity, it can have multiple tasks linked to it
+// If two activities are linked to the same template, they are considered to be the same activity but at different times
+model Template {
+  id             String         @id @default(uuid())
+  visible        Boolean
+  overlapability Overlapability
+  hasTimer       Boolean
+
+  // https://icalendar.org/RFC-Specifications/iCalendar-RFC-5545/
+  summary     String
+  // Duration in seconds
+  duration    Int
+  description String?
+  location    String?
+  geoLat      Float?
+  geoLon      Float?
+
+  child   Child               @relation(fields: [childId], references: [id])
+  childId String
+  image   ClarificationImage? @relation(fields: [imageId], references: [id])
+  imageId String?
+  tasks   Task[]
+
+  activity Activity[]
+}
+
+// A task is linked to a template and can have multiple subtasks and optionally a super task
+model Task {
+  id              String @id @default(uuid())
+  // Reference number are totally ordered but not necessarily sequential
+  referenceNumber Int
+
+  // https://icalendar.org/RFC-Specifications/iCalendar-RFC-5545/
+  summary     String
+  description String?
+  // Duration in seconds
+  duration    Int?
+
+  template   Template            @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templateId String
+  imageId    String?
+  image      ClarificationImage? @relation(fields: [imageId], references: [id])
+
+  taskProgress TaskProgress[]
+
+  @@unique([templateId, referenceNumber])
+}
+
+// A task progress is a relation between a task and an activity, it is used to track the progress of a task
+model TaskProgress {
+  taskId       String
+  activityId   String
+  trackingTask Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  activity     Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+
+  done    Boolean @default(false)
+  unclear Boolean @default(false)
+
+  @@id([activityId, taskId], name: "activityTask")
+}
+
+// Every activity is an instance of a template, but has its own start and end time
+model Activity {
+  id    String   @id @default(uuid())
+  start DateTime
+
+  done    Boolean  @default(false)
+  emotion Emotion?
+  unclear Boolean  @default(false)
+
+  template   Template       @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templateId String
+  child      Child          @relation(fields: [childId], references: [id])
+  childId    String
+  progresses TaskProgress[]
+}
+
+model ExternalCalendar {
+  id         String   @id @default(uuid())
+  name       String
+  color      String?
+  url        String
+  guardian   Guardian @relation(fields: [guardianId], references: [id])
+  guardianId String
+}
+
+model Child {
+  id               String               @id @default(uuid())
+  name             String
+  settings         ChildSettings        @relation(fields: [settingsId], references: [id])
+  settingsId       String               @unique
+  templateElements ClarificationImage[]
+  activities       Activity[]
+  templates        Template[]
+  submittedsurvey  SubmittedSurvey[]
+
+  // For each child, one relation ADMIN should exist!
+  childAccessRelation ChildAccessRelation[]
+}
+
+model ChildAccessRelation {
+  child      Child              @relation(fields: [childId], references: [id])
+  guardian   Guardian           @relation(fields: [guardianId], references: [id])
+  childId    String
+  guardianId String
+  permission GuardianPermission
+
+  @@id([childId, guardianId, permission])
+}
+
+model Guardian {
+  id                  String                @id @default(uuid())
+  auth0Id             String                @unique
+  name                String
+  serverRole          ServerRole            @default(GUARDIAN)
+  picture             Bytes?
+  childAccessRelation ChildAccessRelation[]
+  externalCalendars   ExternalCalendar[]
+}
+
+// When changing the default values, also edit the API DOCS in src/types/express/child.ts
+model ChildSettings {
+  id    String @id @default(uuid())
+  // Child? here so a child model always has Settings.
+  Child Child?
+
+  // Child settings
+  time               ChildTime               @default(VISUAL)
+  language           ChildLanguage           @default(DUTCH)
+  textAmount         ChildTextAmount         @default(ALL)
+  animationAmount    ChildAnimationAmount    @default(ALL)
+  homeScreen         ChildHomeScreen         @default(DAY)
+  showPastActivities ChildShowPastActivities @default(PARTIAL)
+  emergencyNumber    String?
+
+  // View permissions
+  canViewDayOverview  Boolean @default(true)
+  canViewWeekOverview Boolean @default(true)
+
+  // Color settings:
+  primaryColor ChildColor @default(PURPLE)
+
+  mondayColor    ChildColor @default(BLUE)
+  tuesdayColor   ChildColor @default(LIGHT_BLUE)
+  wednesdayColor ChildColor @default(TEAL)
+  thursdayColor  ChildColor @default(GREEN)
+  fridayColor    ChildColor @default(LIGHT_GREEN)
+  saturdayColor  ChildColor @default(ORANGE)
+  sundayColor    ChildColor @default(RED)
+
+  paletteFirst   ChildColor @default(BLUE)
+  paletteSecond  ChildColor @default(LIGHT_BLUE)
+  paletteThird   ChildColor @default(TEAL)
+  paletteFourth  ChildColor @default(GREEN)
+  paletteFifth   ChildColor @default(LIGHT_GREEN)
+  paletteSixth   ChildColor @default(ORANGE)
+  paletteSeventh ChildColor @default(RED)
+}
+
+enum ChildTime {
+  VISUAL
+  DIGITAL
+}
+
+enum ChildLanguage {
+  ENGLISH
+  DUTCH
+}
+
+enum ChildHomeScreen {
+  DAY
+  WEEK
+}
+
+enum ChildColor {
+  RED
+  PINK
+  PURPLE
+  DEEP_PURPLE
+  INDIGO
+  BLUE
+  LIGHT_BLUE
+  CYAN
+  TEAL
+  GREEN
+  LIGHT_GREEN
+  LIME
+  YELLOW
+  AMBER
+  ORANGE
+  DEEP_ORANGE
+  BROWN
+  GREY
+  BLUE_GREY
+}
+
+enum ChildShowPastActivities {
+  HIDDEN
+  PARTIAL
+}
+
+enum ChildTextAmount {
+  NONE
+  TITLE_ONLY
+  ALL
+}
+
+enum ChildAnimationAmount {
+  NONE
+  REDUCED
+  ALL
+}
+
+enum ServerRole {
+  ADMIN
+  GUARDIAN
+}
+
+enum Overlapability {
+  DEFAULT
+  OVERLAPPING
+  BLOCKING
+}
+
+enum GuardianPermission {
+  ADMIN
+  GUARDIAN
+}
+
+enum SurveyType {
+  QUESTIONNAIRE
+  FEEDBACK
+}
+
+enum Emotion {
+  HAPPY
+  NEUTRAL
+  SAD
+}
